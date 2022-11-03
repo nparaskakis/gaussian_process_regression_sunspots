@@ -1,5 +1,5 @@
 function partition = clever_partition(y,p)
-    %hajaaaaaaa
+    
     n = length(y);
     
     cvp = cvpartition(n,'Holdout',p);
