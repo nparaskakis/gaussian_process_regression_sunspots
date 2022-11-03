@@ -16,105 +16,141 @@ close all;
 [x_observed,y_observed,y_std] = read_sunspots_data('data.csv');
 
 
+%% Parameters for script
+kernel = 'ardmatern32';
+normalization = 0;
+clever_partitioning = 1;
+p = 0.1;
+lossfun = @(y_true,y_pred,W) rrmse(y_true,y_pred,W); % RRMSE
+%lossfun = 'mse'; % MSE
+maxEvalNum = 10;
+maxTimeSec = 5*60;
+
+
 %% Normalize data
 [y_observed_normalized,y_observed_mean,y_observed_std] = normalize_data(y_observed);
-
-%y_observed_normalized = y_observed;
-%% CVGPR Model 1
-lossfun = @(y_true,y_pred,W) rrmse(y_true,y_pred,W);
-
-gprMdl1 = fitrgp(x_observed,y_observed_normalized,'KernelFunction','squaredexponential','Optimizer','lbfgs','OptimizeHyperparameters',{'BasisFunction','KernelScale','Sigma'},'HyperparameterOptimizationOptions',struct('Optimizer','bayesopt','ShowPlots',0,'MaxObjectiveEvaluations',50,'MaxTime',60,'AcquisitionFunctionName','expected-improvement-per-second-plus'));
-
-cvgprMdl1 = crossval(gprMdl1,'Holdout',0.1);
-
-y_pred_1_fold = kfoldPredict(cvgprMdl1);
-
-loss_1 = kfoldLoss(cvgprMdl1,'LossFun',lossfun);
-
-x = linspace(min(x_observed),max(x_observed),10000)';
-
-[y_pred_1,y_pred_std_1,y_pred_int_1] = predict(cvgprMdl1.Trained{1},x,'Alpha',0.05);
-
-loss_11 = loss(cvgprMdl1.Trained{1},x_observed,y_observed_normalized,'LossFun',lossfun);
-
-Data = y_observed_normalized;[Maxima,MaxIdx] = findpeaks(Data);
-DataInv = 1.01*max(Data) - Data;
-[Minima,MinIdx] = findpeaks(DataInv);
-
-figure();
-hold on;
-scatter(x_observed,y_observed_normalized,'ok','filled');
-scatter(x_observed(cvgprMdl1.Partition.test),y_observed_normalized(cvgprMdl1.Partition.test),'og','filled');
-scatter(x_observed(cvgprMdl1.Partition.test),y_pred_1_fold(cvgprMdl1.Partition.test),'or','filled');
-
-scatter(x_observed(MinIdx),y_observed_normalized(MinIdx),'g','pentagram','LineWidth',5);
-
-scatter(x_observed(MaxIdx),y_observed_normalized(MaxIdx),'r','pentagram','LineWidth',5);
-
-plot(x,y_pred_1,'r');
-patch([x;flipud(x)],[y_pred_int_1(:,1);flipud(y_pred_int_1(:,2))],'k','FaceAlpha',0.1);
-hold off;
-title('GPR Fit');
+if (normalization == 0)
+    y_observed_normalized = y_observed;
+end
 
 
+%% GPR Model (Clever partitioning)
 
-figure();
-hold on;
-scatter(x_observed,y_observed,'ok','filled');
-scatter(x_observed(cvgprMdl1.Partition.test),y_observed(cvgprMdl1.Partition.test),'og','filled');
-scatter(x_observed(cvgprMdl1.Partition.test),y_pred_1_fold(cvgprMdl1.Partition.test)*y_observed_std + y_observed_mean,'or','filled');
-plot(x,y_pred_1*y_observed_std + y_observed_mean,'r');
-patch([x;flipud(x)],[y_pred_int_1(:,1)*y_observed_std + y_observed_mean;flipud(y_pred_int_1(:,2)*y_observed_std + y_observed_mean)],'k','FaceAlpha',0.1);
-hold off;
-title('GPR Fit');
+if (clever_partitioning == 1)
 
-%% CVGPR Model 2
+    % Partition dataset in training (1) and test (0) set
+    partition = ~clever_partition(y_observed_normalized,p);
 
-cvgprMdl2 = fitrgp(x_observed,y_observed_normalized,'Optimizer','lbfgs','OptimizeHyperparameters','auto','HyperparameterOptimizationOptions',struct('Optimizer','randomsearch','MaxObjectiveEvaluations',100,'ShowPlots',0));
+    % CV GPR Model
+    gprMdl = fitrgp(x_observed(partition),y_observed_normalized(partition),'KernelFunction',kernel,'Optimizer','lbfgs','OptimizeHyperparameters',{'BasisFunction','KernelScale','Sigma'},'HyperparameterOptimizationOptions',struct('Optimizer','bayesopt','ShowPlots',0,'MaxObjectiveEvaluations',maxEvalNum,'MaxTime',maxTimeSec,'AcquisitionFunctionName','expected-improvement-per-second-plus'));
 
-[y_pred_2,y_pred_std_2,y_pred_int_2] = kfoldPredict(cvgprMdl2,'Alpha',0.05);
+    % Predict test data
+    [y_pred,~,~] = predict(gprMdl,x_observed(~partition));
 
-x = linspace(min(x_observed),max(x_observed),10000)';
+    % Compute loss on test data
+    loss_test = loss(gprMdl,x_observed(~partition),y_observed_normalized(~partition),'LossFun',lossfun);
 
-[y_pred_1,y_pred_std_1,y_pred_int_1] = predict(gprMdl1,x,'Alpha',0.05);
+    % Compute loss on train data
+    loss_train = loss(gprMdl,x_observed(partition),y_observed_normalized(partition),'LossFun',lossfun);
 
-figure();
-hold on;
-scatter(x_observed,y_observed_normalized,'ob','filled');
-plot(x,y_pred_1,'r');
-patch([x;flipud(x)],[y_pred_int_1(:,1);flipud(y_pred_int_1(:,2))],'k','FaceAlpha',0.1);
-hold off;
-title('GPR Fit');
+    % Predict data on a continuous x-set
+    x = linspace(min(x_observed),max(x_observed),10000)';
+    [y_pred_cont,y_pred_std,y_pred_int] = predict(gprMdl,x,'Alpha',0.05);
+
+    % Plot model
+    figure();
+    if (normalization == 1)
+        subplot(2,1,1);
+    end
+    hold on;
+    scatter(x_observed,y_observed_normalized,'ok','filled');
+    scatter(x_observed(~partition),y_observed_normalized(~partition),'og','filled');
+    scatter(x_observed(~partition),y_pred,'or','filled');
+    plot(x,y_pred_cont,'r');
+    patch([x;flipud(x)],[y_pred_int(:,1);flipud(y_pred_int(:,2))],'k','FaceAlpha',0.1);
+    hold off;
+    if (normalization == 1)
+        title('Model Of Gaussian Process Regression Fit (Normalized Data)');
+    end
+    if (normalization == 0)
+        str1 = strcat('Kernel Function:',{' '},kernel);
+        str2 = strcat('Holdout:',{' '},num2str(p));
+        title({'Model Of Gaussian Process Regression Fit',str1,str2});
+    end
+    legend({'True Train Observations','True Test Observations','Predicted Test Observations','Continuous Predicted Line','Prediction Intervals of 95% Confidence Level'},'Location','best')
+    
+    % Plot denormalized model (if normalization applied before training)
+    if (normalization == 1)
+        subplot(2,1,2);
+        hold on;
+        scatter(x_observed,y_observed,'ok','filled');
+        scatter(x_observed(~partition),y_observed(~partition),'og','filled');
+        scatter(x_observed(~partition),y_pred*y_observed_std + y_observed_mean,'or','filled');
+        plot(x,y_pred_cont*y_observed_std + y_observed_mean,'r');
+        patch([x;flipud(x)],[y_pred_int(:,1)*y_observed_std + y_observed_mean;flipud(y_pred_int(:,2)*y_observed_std + y_observed_mean)],'k','FaceAlpha',0.1);
+        hold off;
+        title('Model Of Gaussian Process Regression Fit (Denormalized Data)');
+        legend({'True Train Observations','True Test Observations','Predicted Test Observations','Continuous Predicted Line','Prediction Intervals of 95% Confidence Level'},'Location','best')
+    end
+    
+end
 
 
-%% CVGPR Model 3
-cvgprMdl2 = fitrgp(x_observed,y_observed_norm,'OptimizeHyperparameters','all');
+%% GPR Model (Random partitioning)
 
-y_pred = kfoldPredict(cvgprMdl2);
-
-loss = kfoldLoss(cvgprMdl1);
-
-aa = cvgprMdl2.Trained(1);
-aa = aa{1};
-bb = aa.Partition.test;
-
-[ypred1,~,yint1] = predict(aa,x,'Alpha',0.05);
-
-figure();
-hold on
-scatter(x_observed,y_observed_norm,'xb') % Observed data points
-scatter(x_observed(cvgprMdl1.Partition.test),y_observed_norm(cvgprMdl1.Partition.test),'ok','filled')
-scatter(x_observed(cvgprMdl1.Partition.test),y_pred(cvgprMdl1.Partition.test),'or','filled')                  % GPR predictions
-patch([x;flipud(x)],[yint1(:,1);flipud(yint1(:,2))],'k','FaceAlpha',0.1); % Prediction intervals
-hold off
-
-title('GPR Fit of Noise-Free Observations')
-
-
-figure();
-hold on
-scatter(x_observed,y_observed2,'xr') % Observed data points
-plot(x,ypred2,'g')                   % GPR predictions
-patch([x;flipud(x)],[yint2(:,1);flipud(yint2(:,2))],'k','FaceAlpha',0.1); % Prediction intervals
-hold off
-title('GPR Fit of Noisy Observations')
+if (clever_partitioning == 0)
+    
+    % GPR Model
+    gprMdl = fitrgp(x_observed,y_observed_normalized,'KernelFunction',kernel,'Optimizer','lbfgs','OptimizeHyperparameters',{'BasisFunction','KernelScale','Sigma'},'HyperparameterOptimizationOptions',struct('Optimizer','bayesopt','ShowPlots',0,'MaxObjectiveEvaluations',maxEvalNum,'MaxTime',maxTimeSec,'AcquisitionFunctionName','expected-improvement-per-second-plus'));
+    
+    % CV GPR Model
+    cvgprMdl = crossval(gprMdl,'Holdout',p);
+    
+    % Predict test data
+    y_pred = kfoldPredict(cvgprMdl);
+    
+    % Compute loss on test data
+    loss_test = kfoldLoss(cvgprMdl,'LossFun',lossfun);
+    
+    % Compute loss on train data
+    loss_train = loss(cvgprMdl.Trained{1},x_observed(~cvgprMdl.Partition.test),y_observed_normalized(~cvgprMdl.Partition.test),'LossFun',lossfun);
+    
+    % Predict data on a continuous x-set
+    x = linspace(min(x_observed),max(x_observed),10000)';
+    [y_pred_cont,y_pred_std,y_pred_int] = predict(cvgprMdl.Trained{1},x,'Alpha',0.05);
+    
+    % Plot model
+    figure();
+    if (normalization == 1)
+        subplot(2,1,1);
+    end
+    hold on;
+    scatter(x_observed,y_observed_normalized,'ok','filled');
+    scatter(x_observed(cvgprMdl.Partition.test),y_observed_normalized(cvgprMdl.Partition.test),'og','filled');
+    scatter(x_observed(cvgprMdl.Partition.test),y_pred(cvgprMdl.Partition.test),'or','filled');
+    plot(x,y_pred_cont,'r');
+    patch([x;flipud(x)],[y_pred_int(:,1);flipud(y_pred_int(:,2))],'k','FaceAlpha',0.1);
+    hold off;
+    if (normalization == 1)
+        title('Model Of Gaussian Process Regression Fit (Normalized Data)');
+    end
+    if (normalization == 0)
+        title('Model Of Gaussian Process Regression Fit');
+    end
+    legend({'True Train Observations','True Test Observations','Predicted Test Observations','Continuous Predicted Line','Prediction Intervals of 95% Confidence Level'},'Location','best')
+    
+    % Plot denormalized model (if normalization applied before training)
+    if (normalization == 1)
+        subplot(2,1,2);
+        hold on;
+        scatter(x_observed,y_observed,'ok','filled');
+        scatter(x_observed(cvgprMdl.Partition.test),y_observed(cvgprMdl.Partition.test),'og','filled');
+        scatter(x_observed(cvgprMdl.Partition.test),y_pred(cvgprMdl.Partition.test)*y_observed_std + y_observed_mean,'or','filled');
+        plot(x,y_pred_cont*y_observed_std + y_observed_mean,'r');
+        patch([x;flipud(x)],[y_pred_int(:,1)*y_observed_std + y_observed_mean;flipud(y_pred_int(:,2)*y_observed_std + y_observed_mean)],'k','FaceAlpha',0.1);
+        hold off;
+        title('Model Of Gaussian Process Regression Fit (Denormalized Data)');
+        legend({'True Train Observations','True Test Observations','Predicted Test Observations','Continuous Predicted Line','Prediction Intervals of 95% Confidence Level'},'Location','best')
+    end
+    
+end
